@@ -115,9 +115,22 @@ bool NativeBridgeLoad(const char *game_data_dir, int api_level, void *data, size
     //TODO 等待houdini初始化
     sleep(5);
 
-    auto libart = dlopen("libart.so", RTLD_NOW);
-    auto JNI_GetCreatedJavaVMs = (jint (*)(JavaVM **, jsize, jsize *)) dlsym(libart,
+    auto JNI_GetCreatedJavaVMs = (jint (*)(JavaVM **, jsize, jsize *)) dlsym(RTLD_DEFAULT,
                                                                              "JNI_GetCreatedJavaVMs");
+    if (!JNI_GetCreatedJavaVMs) {
+        auto libnativehelper = dlopen("libnativehelper.so", RTLD_NOW);
+        if (libnativehelper) {
+            JNI_GetCreatedJavaVMs = (jint (*)(JavaVM **, jsize, jsize *)) dlsym(libnativehelper,
+                                                                                "JNI_GetCreatedJavaVMs");
+        }
+    }
+    if (!JNI_GetCreatedJavaVMs) {
+        auto libart = dlopen("libart.so", RTLD_NOW);
+        if (libart) {
+            JNI_GetCreatedJavaVMs = (jint (*)(JavaVM **, jsize, jsize *)) dlsym(libart,
+                                                                                "JNI_GetCreatedJavaVMs");
+        }
+    }
     LOGI("JNI_GetCreatedJavaVMs %p", JNI_GetCreatedJavaVMs);
     JavaVM *vms_buf[1];
     JavaVM *vms;
