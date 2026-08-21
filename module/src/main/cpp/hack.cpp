@@ -112,17 +112,27 @@ struct NativeBridgeCallbacks {
 };
 
 bool NativeBridgeLoad(const char *game_data_dir, int api_level, void *data, size_t length) {
+    FILE *flog = fopen("/data/local/tmp/hack.log", "a");
+    if (flog) {
+        fprintf(flog, "[hack] NativeBridgeLoad start, api=%d dir=%s\n", api_level, game_data_dir);
+        fflush(flog);
+    }
+#define HLOG(fmt, ...) do { if (flog) { fprintf(flog, "[hack] " fmt "\n", ##__VA_ARGS__); fflush(flog); } } while (0)
+
     //TODO 等待houdini初始化
     sleep(5);
+    HLOG("after sleep");
 
     // NOTE: JNI_OnLoad on the arm64 side only uses `reserved` (game_data_dir),
     // so we do not need a JavaVM* here. Get JavaVM anyway for potential future use.
     auto JNI_GetCreatedJavaVMs = (jint (*)(JavaVM **, jsize, jsize *)) dlsym(RTLD_DEFAULT,
                                                                              "JNI_GetCreatedJavaVMs");
+    HLOG("dlsym RTLD_DEFAULT JNI_GetCreatedJavaVMs=%p", JNI_GetCreatedJavaVMs);
     if (!JNI_GetCreatedJavaVMs) {
-        // locate nativehelper in apex (dlopen by name may fail in app namespace)
         auto nh = dlopen("libnativehelper.so", RTLD_NOW);
+        HLOG("dlopen libnativehelper=%p", nh);
         if (!nh) nh = dlopen("/apex/com.android.runtime/lib64/libnativehelper.so", RTLD_NOW);
+        HLOG("dlopen apex nativehelper=%p", nh);
         if (nh) {
             JNI_GetCreatedJavaVMs = (jint (*)(JavaVM **, jsize, jsize *)) dlsym(nh,
                                                                                 "JNI_GetCreatedJavaVMs");
@@ -130,37 +140,43 @@ bool NativeBridgeLoad(const char *game_data_dir, int api_level, void *data, size
     }
     if (!JNI_GetCreatedJavaVMs) {
         auto art = dlopen("libart.so", RTLD_NOW);
+        HLOG("dlopen libart=%p", art);
         if (!art) art = dlopen("/apex/com.android.art/lib64/libart.so", RTLD_NOW);
+        HLOG("dlopen apex art=%p", art);
         if (art) {
             JNI_GetCreatedJavaVMs = (jint (*)(JavaVM **, jsize, jsize *)) dlsym(art,
                                                                                 "JNI_GetCreatedJavaVMs");
         }
     }
-    LOGI("JNI_GetCreatedJavaVMs %p", JNI_GetCreatedJavaVMs);
+    HLOG("JNI_GetCreatedJavaVMs final=%p", JNI_GetCreatedJavaVMs);
     JavaVM *jvm = nullptr;
     if (JNI_GetCreatedJavaVMs) {
         JavaVM *vms_buf[1];
         jsize num_vms;
         jint status = JNI_GetCreatedJavaVMs(vms_buf, 1, &num_vms);
+        HLOG("GetCreatedJavaVMs status=%d num=%d", status, num_vms);
         if (status == JNI_OK && num_vms > 0) {
             jvm = vms_buf[0];
         }
     }
-    LOGI("jvm %p", jvm);
+    HLOG("jvm=%p", jvm);
 
     auto nb = dlopen("libhoudini.so", RTLD_NOW);
+    HLOG("dlopen libhoudini=%p", nb);
     if (!nb) {
         auto native_bridge = GetNativeBridgeLibrary();
-        LOGI("native bridge: %s", native_bridge.data());
+        HLOG("native bridge prop: %s", native_bridge.data());
         nb = dlopen(native_bridge.data(), RTLD_NOW);
+        HLOG("dlopen nb2=%p", nb);
     }
     if (nb) {
-        LOGI("nb %p", nb);
+        HLOG("nb %p", nb);
         auto callbacks = (NativeBridgeCallbacks *) dlsym(nb, "NativeBridgeItf");
+        HLOG("callbacks=%p", callbacks);
         if (callbacks) {
-            LOGI("NativeBridgeLoadLibrary %p", callbacks->loadLibrary);
-            LOGI("NativeBridgeLoadLibraryExt %p", callbacks->loadLibraryExt);
-            LOGI("NativeBridgeGetTrampoline %p", callbacks->getTrampoline);
+            HLOG("NativeBridgeLoadLibrary %p", callbacks->loadLibrary);
+            HLOG("NativeBridgeLoadLibraryExt %p", callbacks->loadLibraryExt);
+            HLOG("NativeBridgeGetTrampoline %p", callbacks->getTrampoline);
 
             int fd = syscall(__NR_memfd_create, "anon", MFD_CLOEXEC);
             ftruncate(fd, (off_t) length);
@@ -170,7 +186,7 @@ bool NativeBridgeLoad(const char *game_data_dir, int api_level, void *data, size
             munmap(data, length);
             char path[PATH_MAX];
             snprintf(path, PATH_MAX, "/proc/self/fd/%d", fd);
-            LOGI("arm path %s", path);
+            HLOG("arm path %s", path);
 
             void *arm_handle;
             if (api_level >= 26) {
@@ -178,20 +194,23 @@ bool NativeBridgeLoad(const char *game_data_dir, int api_level, void *data, size
             } else {
                 arm_handle = callbacks->loadLibrary(path, RTLD_NOW);
             }
+            HLOG("arm_handle=%p", arm_handle);
             if (arm_handle) {
-                LOGI("arm handle %p", arm_handle);
                 auto init = (void (*)(JavaVM *, void *)) callbacks->getTrampoline(arm_handle,
                                                                                   "JNI_OnLoad",
                                                                                   nullptr, 0);
-                LOGI("JNI_OnLoad %p", init);
+                HLOG("JNI_OnLoad trampoline=%p", init);
                 if (init) {
                     init(jvm, (void *) game_data_dir);
+                    HLOG("JNI_OnLoad returned");
                     return true;
                 }
             }
             close(fd);
         }
     }
+    HLOG("NativeBridgeLoad returning false");
+    if (flog) fclose(flog);
     return false;
 }
 
