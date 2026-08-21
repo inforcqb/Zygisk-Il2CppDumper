@@ -115,44 +115,38 @@ bool NativeBridgeLoad(const char *game_data_dir, int api_level, void *data, size
     //TODO 等待houdini初始化
     sleep(5);
 
+    // NOTE: JNI_OnLoad on the arm64 side only uses `reserved` (game_data_dir),
+    // so we do not need a JavaVM* here. Get JavaVM anyway for potential future use.
     auto JNI_GetCreatedJavaVMs = (jint (*)(JavaVM **, jsize, jsize *)) dlsym(RTLD_DEFAULT,
                                                                              "JNI_GetCreatedJavaVMs");
     if (!JNI_GetCreatedJavaVMs) {
-        auto libnativehelper = dlopen("libnativehelper.so", RTLD_NOW);
-        if (libnativehelper) {
-            JNI_GetCreatedJavaVMs = (jint (*)(JavaVM **, jsize, jsize *)) dlsym(libnativehelper,
+        // locate nativehelper in apex (dlopen by name may fail in app namespace)
+        auto nh = dlopen("libnativehelper.so", RTLD_NOW);
+        if (!nh) nh = dlopen("/apex/com.android.runtime/lib64/libnativehelper.so", RTLD_NOW);
+        if (nh) {
+            JNI_GetCreatedJavaVMs = (jint (*)(JavaVM **, jsize, jsize *)) dlsym(nh,
                                                                                 "JNI_GetCreatedJavaVMs");
         }
     }
     if (!JNI_GetCreatedJavaVMs) {
-        auto libart = dlopen("libart.so", RTLD_NOW);
-        if (libart) {
-            JNI_GetCreatedJavaVMs = (jint (*)(JavaVM **, jsize, jsize *)) dlsym(libart,
+        auto art = dlopen("libart.so", RTLD_NOW);
+        if (!art) art = dlopen("/apex/com.android.art/lib64/libart.so", RTLD_NOW);
+        if (art) {
+            JNI_GetCreatedJavaVMs = (jint (*)(JavaVM **, jsize, jsize *)) dlsym(art,
                                                                                 "JNI_GetCreatedJavaVMs");
         }
     }
     LOGI("JNI_GetCreatedJavaVMs %p", JNI_GetCreatedJavaVMs);
-    JavaVM *vms_buf[1];
-    JavaVM *vms;
-    jsize num_vms;
-    jint status = JNI_GetCreatedJavaVMs(vms_buf, 1, &num_vms);
-    if (status == JNI_OK && num_vms > 0) {
-        vms = vms_buf[0];
-    } else {
-        LOGE("GetCreatedJavaVMs error");
-        return false;
+    JavaVM *jvm = nullptr;
+    if (JNI_GetCreatedJavaVMs) {
+        JavaVM *vms_buf[1];
+        jsize num_vms;
+        jint status = JNI_GetCreatedJavaVMs(vms_buf, 1, &num_vms);
+        if (status == JNI_OK && num_vms > 0) {
+            jvm = vms_buf[0];
+        }
     }
-
-    auto lib_dir = GetLibDir(vms);
-    if (lib_dir.empty()) {
-        LOGE("GetLibDir error");
-        return false;
-    }
-    if (lib_dir.find("/lib/x86") != std::string::npos) {
-        LOGI("no need NativeBridge");
-        munmap(data, length);
-        return false;
-    }
+    LOGI("jvm %p", jvm);
 
     auto nb = dlopen("libhoudini.so", RTLD_NOW);
     if (!nb) {
@@ -190,8 +184,10 @@ bool NativeBridgeLoad(const char *game_data_dir, int api_level, void *data, size
                                                                                   "JNI_OnLoad",
                                                                                   nullptr, 0);
                 LOGI("JNI_OnLoad %p", init);
-                init(vms, (void *) game_data_dir);
-                return true;
+                if (init) {
+                    init(jvm, (void *) game_data_dir);
+                    return true;
+                }
             }
             close(fd);
         }
